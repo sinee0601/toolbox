@@ -1,0 +1,96 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & E2E test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install & build
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Install test dependencies
+        run: |
+          pip install -r tests/requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Start preview server
+        run: |
+          nohup npm run serve > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/ >/dev/null && exit 0; sleep 1; done
+          cat server.log; exit 1
+
+      - name: E2E tests (all pages, calculators, image/PDF tools)
+        run: python tests/e2e.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloudflare Pages
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check deploy secrets
+        id: gate
+        run: echo "ready=${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' && vars.CLOUDFLARE_PROJECT_NAME != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip notice
+        if: steps.gate.outputs.ready != 'true'
+        run: echo "::notice::Cloudflare 시크릿/변수가 없어 배포를 건너뜁니다 (README의 'CI/CD' 참고)."
+
+      # 배포 빌드는 SITE_URL(실제 도메인)을 반영해 다시 만든다 — 테스트용 빌드와 분리
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - name: Production build
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          npm ci
+          npm run build
+      - name: Deploy
+        if: steps.gate.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=main
