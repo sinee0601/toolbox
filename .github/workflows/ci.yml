@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -73,7 +73,7 @@ jobs:
         run: echo "::notice::Cloudflare 시크릿/변수가 없어 배포를 건너뜁니다 (README의 'CI/CD' 참고)."
 
       # 배포 빌드는 SITE_URL(실제 도메인)을 반영해 다시 만든다 — 테스트용 빌드와 분리
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.ready == 'true'
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.ready == 'true'
